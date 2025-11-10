@@ -8,15 +8,14 @@ from datetime import datetime
 from email.message import EmailMessage
 
 from flask import (
-    Flask, request, jsonify, g, redirect, url_for, make_response
+    Flask, request, jsonify, g, redirect, url_for, make_response, render_template_string
 )
-from flask import render_template_string
 from dotenv import load_dotenv
 import qrcode
 
 load_dotenv()
 
-# Environment Variables
+# ------------------ ENV ------------------
 APP_SECRET = os.getenv("FLASK_SECRET", "dev_secret")
 ADMIN_PIN = os.getenv("ADMIN_PIN", "123456")
 EMAIL_HOST = os.getenv("EMAIL_HOST")
@@ -28,6 +27,7 @@ BRAND_NAME = os.getenv("BRAND_NAME", "One-Time QR")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "qr_system.db")
 
+# ------------------ DB ------------------
 def get_db():
     if 'db' not in g:
         g.db = sqlite3.connect(DB_PATH)
@@ -53,6 +53,7 @@ def init_db():
     """)
     db.commit()
 
+# ------------------ QR ------------------
 def gen_token():
     return secrets.token_hex(6).upper()
 
@@ -62,9 +63,10 @@ def make_qr_png_bytes(data: str) -> bytes:
     img.save(buf, format="PNG")
     return buf.getvalue()
 
+# ------------------ EMAIL (BREVO SMTP) ------------------
 def send_qr_email(to_email: str, token: str, png_bytes: bytes):
     if not EMAIL_USER or not EMAIL_PASS:
-        raise RuntimeError("EMAIL_USER/EMAIL_PASS missing. Check Render Environment.")
+        raise RuntimeError("EMAIL_USER/EMAIL_PASS missing. Set correctly in Render Environment.")
 
     msg = EmailMessage()
     msg["Subject"] = f"{BRAND_NAME}: Your One-Time QR"
@@ -72,11 +74,9 @@ def send_qr_email(to_email: str, token: str, png_bytes: bytes):
     msg["To"] = to_email
 
     html = f"""
-    <div style='font-family:Arial,Helvetica,sans-serif'>
-      <h2>{BRAND_NAME}</h2>
-      <p>Your one-time QR is below:</p>
-      <b>Token:</b> <code>{token}</code>
-    </div>
+    <h2>{BRAND_NAME}</h2>
+    <p>Your one-time QR code is attached.</p>
+    <p><b>Token:</b> {token}</p>
     """
     msg.add_alternative(html, subtype="html")
     msg.add_attachment(png_bytes, maintype="image", subtype="png", filename=f"{token}.png")
@@ -86,6 +86,7 @@ def send_qr_email(to_email: str, token: str, png_bytes: bytes):
         smtp.login(EMAIL_USER, EMAIL_PASS)
         smtp.send_message(msg)
 
+# ------------------ FLASK APP ------------------
 app = Flask(__name__)
 app.secret_key = APP_SECRET
 app.teardown_appcontext(close_db)
@@ -95,27 +96,22 @@ def _ensure_db():
     init_db()
 
 ADMIN_HTML = r"""
-<!doctype html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ brand }} — Issue QR</title></head>
-<body>
-  <h1>{{ brand }} — Issue One-Time QR</h1>
-  <form method="post" action="{{ url_for('issue') }}">
-    <input type="email" name="email" placeholder="client@example.com" required>
-    <button type="submit">Generate & Send</button>
-  </form>
+<h1>{{ brand }} — Issue QR</h1>
+<form method="post" action="{{ url_for('issue') }}">
+  <input type="email" name="email" placeholder="client@example.com" required>
+  <button type="submit">Generate & Send</button>
+</form>
 
-  {% if last %}
-  <h3>Sent to: {{ last.email }}</h3>
-  <p>Token: {{ last.token }}</p>
-  <img src="data:image/png;base64,{{ last.qr_b64 }}">
-  {% endif %}
+{% if last %}
+<h3>Sent to: {{ last.email }}</h3>
+<p>Token: {{ last.token }}</p>
+<img src="data:image/png;base64,{{ last.qr_b64 }}">
+{% endif %}
 
-  <h3>Scanner (open on phone)</h3>
-  <a href="{{ scanner_url }}">{{ scanner_url }}</a>
-  <p>PIN Required: {{ pin }}</p>
-</body>
-</html>
+<hr>
+<h3>Scanner (open on phone)</h3>
+<a href="{{ scanner_url }}">{{ scanner_url }}</a>
+<p>PIN: {{ pin }}</p>
 """
 
 @app.get("/admin")
@@ -140,12 +136,17 @@ def issue():
     last = {'email': email, 'token': token, 'qr_b64': base64.b64encode(png).decode('ascii')}
     return render_template_string(ADMIN_HTML, brand=BRAND_NAME, last=last, scanner_url=f"{host}/scanner", pin=ADMIN_PIN)
 
-SCANNER_HTML = "<h1>Scanner Page Coming</h1>"
+# ------------------ SCANNER PAGE ------------------
+SCANNER_HTML = r"""
+<h1>{{ brand }} Scanner</h1>
+<p>Use your phone camera to scan QR codes.</p>
+"""
 
 @app.get("/scanner")
 def scanner():
-    return render_template_string(SCANNER_HTML)
+    return render_template_string(SCANNER_HTML, brand=BRAND_NAME)
 
+# ------------------ VERIFY API ------------------
 @app.post("/api/verify")
 def api_verify():
     pin = request.headers.get('X-Admin-Pin', '')
